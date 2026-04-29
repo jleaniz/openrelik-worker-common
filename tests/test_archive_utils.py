@@ -1,10 +1,9 @@
-import unittest
-from unittest.mock import patch, MagicMock
-from openrelik_worker_common.archive_utils import extract_archive
 import os
-import shutil
-import subprocess
-from uuid import uuid4
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from openrelik_worker_common.archive_utils import extract_archive
 
 
 class TestArchiveUtils(unittest.TestCase):
@@ -120,22 +119,6 @@ class TestArchiveUtils(unittest.TestCase):
     @patch("subprocess.call")
     @patch("subprocess.check_output")
     @patch("shutil.which")
-    def test_extract_archive_fatal_error_raises(
-        self, mock_which, mock_check_output, mock_subprocess_call
-    ):
-        """Exit codes >= 2 indicate a real failure and must raise."""
-        input_file = {"path": "/path/to/archive.tgz", "display_name": "archive.tgz"}
-        mock_which.return_value = True
-        mock_subprocess_call.return_value = 2
-
-        with self.assertRaises(RuntimeError):
-            extract_archive(
-                input_file, self.output_folder, self.log_file, self.file_filter
-            )
-
-    @patch("subprocess.call")
-    @patch("subprocess.check_output")
-    @patch("shutil.which")
     def test_extract_archive_exit_1_is_warning_not_failure(
         self, mock_which, mock_check_output, mock_subprocess_call
     ):
@@ -152,6 +135,65 @@ class TestArchiveUtils(unittest.TestCase):
         # Returned cleanly; downstream walks export_folder for whatever did extract.
         self.assertIn("7z x", cmd)
         self.assertIn(self.output_folder, export_folder)
+
+    @patch("subprocess.call")
+    @patch("shutil.which")
+    def test_extract_archive_exit_2_with_no_output_raises(
+        self, mock_which, mock_subprocess_call
+    ):
+        """Exit >= 2 AND empty export folder => truly broken archive, raise."""
+        input_file = {"path": "/path/to/archive.zip", "display_name": "archive.zip"}
+        mock_which.return_value = True
+        mock_subprocess_call.return_value = 2
+        # Default behavior: real os.makedirs runs, dir is empty.
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(RuntimeError):
+                extract_archive(
+                    input_file,
+                    tmp,
+                    os.path.join(tmp, "log.txt"),
+                    self.file_filter,
+                )
+
+    @patch("subprocess.call")
+    @patch("shutil.which")
+    def test_extract_archive_exit_2_with_partial_output_is_warning(
+        self, mock_which, mock_subprocess_call
+    ):
+        """Exit >= 2 but *something* extracted => treat as partial success."""
+        input_file = {"path": "/path/to/archive.zip", "display_name": "archive.zip"}
+        mock_which.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Simulate 7z writing at least one file into the export dir before
+            # erroring out on a different entry. The export dir name is
+            # uuid4()-generated, so we intercept os.makedirs to capture it
+            # and drop a file there.
+            created_dirs = []
+            real_makedirs = os.makedirs
+
+            def fake_makedirs(p, *a, **kw):
+                real_makedirs(p, *a, **kw)
+                created_dirs.append(p)
+
+            def fake_call(*args, **kwargs):
+                # Drop a fake "extracted" file into the newest created dir.
+                assert created_dirs, "export dir not yet created"
+                with open(os.path.join(created_dirs[-1], "some_file.txt"), "w") as f:
+                    f.write("partial output")
+                return 2
+
+            mock_subprocess_call.side_effect = fake_call
+            with patch("os.makedirs", side_effect=fake_makedirs):
+                cmd, export_folder = extract_archive(
+                    input_file,
+                    tmp,
+                    os.path.join(tmp, "log.txt"),
+                    self.file_filter,
+                )
+
+            # No exception -> partial success accepted.
+            self.assertTrue(os.path.exists(os.path.join(export_folder, "some_file.txt")))
 
     @patch("subprocess.check_output")
     def test_extract_archive_7z_not_found(self, mock_check_output):

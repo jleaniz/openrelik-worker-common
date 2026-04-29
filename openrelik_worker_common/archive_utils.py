@@ -22,6 +22,14 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 
+def _has_any_file(path: str) -> bool:
+    """Return True if `path` contains at least one regular file (recursively)."""
+    for _, _, files in os.walk(path):
+        if files:
+            return True
+    return False
+
+
 def extract_archive(
     input_file: dict,
     output_folder: str,
@@ -87,16 +95,19 @@ def extract_archive(
     command_string = " ".join(command)
     with open(log_file, "wb") as out:
         ret = subprocess.call(command, stdout=out, stderr=out)
-    # 7z exit code 1 means "extraction finished with warnings" — typically
-    # individual entries were skipped (e.g. ENAMETOOLONG on Windows-path
-    # entries, unsupported compression methods). We treat that as success so
-    # the worker can still pick up the entries that did extract. Anything >= 2
-    # is a real failure.
-    if ret >= 2:
+    # 7z's exit codes don't distinguish "whole archive is broken" from "a
+    # handful of entries couldn't be written" — both are reported as >= 2.
+    # Rather than always failing, we check whether *any* files made it to
+    # disk: if yes, treat the error as a partial-extraction warning so the
+    # worker can still process what did extract; if no, the archive is
+    # genuinely unextractable and we raise. Exit code 1 ("warnings only") is
+    # always treated as partial success.
+    if ret >= 2 and not _has_any_file(export_folder):
         raise RuntimeError(
-            f"Archive extraction failed (exit code {ret}): {command_string}"
+            f"Archive extraction failed (exit code {ret}) with no output: "
+            f"{command_string}"
         )
-    if ret == 1:
+    if ret != 0:
         logger.warning(
             f"Archive extraction finished with warnings (exit code {ret}); "
             f"some entries may have been skipped. See {log_file}"
