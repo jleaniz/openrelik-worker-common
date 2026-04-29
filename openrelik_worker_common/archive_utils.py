@@ -13,10 +13,13 @@
 # limitations under the License.
 """Helper methods for archives."""
 
+import logging
 import os
 import shutil
 import subprocess
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 
 def extract_archive(
@@ -84,7 +87,19 @@ def extract_archive(
     command_string = " ".join(command)
     with open(log_file, "wb") as out:
         ret = subprocess.call(command, stdout=out, stderr=out)
-    if ret != 0:
-        raise RuntimeError("7zip or tar execution error.")
+    # 7z exit code 1 means "extraction finished with warnings" — typically
+    # individual entries were skipped (e.g. ENAMETOOLONG on Windows-path
+    # entries, unsupported compression methods). We treat that as success so
+    # the worker can still pick up the entries that did extract. Anything >= 2
+    # is a real failure.
+    if ret >= 2:
+        raise RuntimeError(
+            f"Archive extraction failed (exit code {ret}): {command_string}"
+        )
+    if ret == 1:
+        logger.warning(
+            f"Archive extraction finished with warnings (exit code {ret}); "
+            f"some entries may have been skipped. See {log_file}"
+        )
 
     return (command_string, export_folder)

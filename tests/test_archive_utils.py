@@ -119,14 +119,39 @@ class TestArchiveUtils(unittest.TestCase):
 
     @patch("subprocess.call")
     @patch("subprocess.check_output")
-    def test_extract_archive_error(self, mock_check_output, mock_subprocess_call):
+    @patch("shutil.which")
+    def test_extract_archive_fatal_error_raises(
+        self, mock_which, mock_check_output, mock_subprocess_call
+    ):
+        """Exit codes >= 2 indicate a real failure and must raise."""
         input_file = {"path": "/path/to/archive.tgz", "display_name": "archive.tgz"}
-        mock_subprocess_call.return_value = 1
+        mock_which.return_value = True
+        mock_subprocess_call.return_value = 2
 
         with self.assertRaises(RuntimeError):
             extract_archive(
                 input_file, self.output_folder, self.log_file, self.file_filter
             )
+
+    @patch("subprocess.call")
+    @patch("subprocess.check_output")
+    @patch("shutil.which")
+    def test_extract_archive_exit_1_is_warning_not_failure(
+        self, mock_which, mock_check_output, mock_subprocess_call
+    ):
+        """7z exit 1 = warnings (e.g. skipped entries); must not raise."""
+        input_file = {"path": "/path/to/archive.zip", "display_name": "archive.zip"}
+        mock_which.return_value = True
+        mock_check_output.return_value = b""
+        mock_subprocess_call.return_value = 1
+
+        cmd, export_folder = extract_archive(
+            input_file, self.output_folder, self.log_file, self.file_filter
+        )
+
+        # Returned cleanly; downstream walks export_folder for whatever did extract.
+        self.assertIn("7z x", cmd)
+        self.assertIn(self.output_folder, export_folder)
 
     @patch("subprocess.check_output")
     def test_extract_archive_7z_not_found(self, mock_check_output):
