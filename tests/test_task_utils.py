@@ -56,7 +56,7 @@ class Utils(unittest.TestCase):
             "meta": meta,
             "file_reports": [],
             "task_report": None,
-            "skip_file_creation": False,
+            "register_in_db": True,
         }
 
         result = task_utils.create_task_result(
@@ -70,18 +70,18 @@ class Utils(unittest.TestCase):
         )
         self.assertEqual(result, task_utils.encode_dict_to_base64(expected))
 
-    def test_create_task_result_skip_file_creation(self):
-        """skip_file_creation should be forwarded into the encoded result."""
+    def test_create_task_result_register_in_db(self):
+        """register_in_db should be forwarded into the encoded result."""
         import base64
         import json
 
         encoded = task_utils.create_task_result(
             output_files=[{"uuid": "abc"}],
             workflow_id="wf1",
-            skip_file_creation=True,
+            register_in_db=False,
         )
         decoded = json.loads(base64.b64decode(encoded.encode("utf-8")).decode("utf-8"))
-        self.assertTrue(decoded["skip_file_creation"])
+        self.assertFalse(decoded["register_in_db"])
 
     input_files = [
         {
