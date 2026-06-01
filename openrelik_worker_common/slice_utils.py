@@ -13,23 +13,32 @@
 # limitations under the License.
 """Helpers for selecting psort time-slice files in downstream tasks.
 
-The plaso psort worker can split its output into N files whose display_name
-encodes the slice index: ``<base>.slice-<K>-of-<N>.<ext>``. Downstream
-exporters (Splunk, S3, Timesketch) often want to scope which slices they
-ingest. This module provides the parser + selector so the rule lives in one
-place.
+When time-slicing is enabled, the plaso psort worker splits its output into
+several files. Each file's display_name records which slice it is, using the
+pattern ``<base>.slice-<number>-of-<total>.<ext>`` (for example
+``timeline.slice-2-of-5.jsonl``). Downstream exporters (Splunk, S3,
+Timesketch) often want to upload only some of those slices, so this module
+provides the parser and selector used to pick them.
 """
 
 import re
 from typing import Union
 
-# Matches ".slice-<K>-of-<N>." anywhere in display_name.
+# Matches the ".slice-<number>-of-<total>." marker anywhere in a display_name.
 _SLICE_RE = re.compile(r"\.slice-(\d+)-of-(\d+)\.")
 
 
 def parse_slice_index(display_name: str) -> tuple[int, int] | None:
-    """Return ``(k, n)`` if ``display_name`` carries a psort slice suffix,
-    else ``None``."""
+    """Reads the slice marker from a file's display name.
+
+    Args:
+        display_name: The file's display name, which may contain a
+            ``.slice-<number>-of-<total>.`` marker.
+
+    Returns:
+        A ``(slice_number, total_slices)`` tuple if the name has a slice
+        marker, otherwise None.
+    """
     if not display_name:
         return None
     match = _SLICE_RE.search(display_name)
@@ -37,8 +46,19 @@ def parse_slice_index(display_name: str) -> tuple[int, int] | None:
 
 
 def _normalize_mode(mode: Union[str, int, None]) -> Union[str, int]:
-    """Coerce mode into ``"all"``, ``"latest"``, or a positive int. Raises
-    ``ValueError`` for anything else."""
+    """Validates and normalizes a slice-selection mode.
+
+    Args:
+        mode: The selection mode. Accepts "all", "latest", a positive
+            integer (or its string form), None, or an empty string.
+
+    Returns:
+        "all", "latest", or a positive integer.
+
+    Raises:
+        ValueError: If mode is a boolean, a non-integer, or an integer
+            less than 1.
+    """
     if mode is None or mode == "" or mode == "all":
         return "all"
     if mode == "latest":
@@ -63,17 +83,27 @@ def _normalize_mode(mode: Union[str, int, None]) -> Union[str, int]:
 def select_slice(
     input_files: list[dict], mode: Union[str, int, None] = "all"
 ) -> list[dict]:
-    """Filter a list of OutputFile-style dicts by slice membership.
+    """Picks which time-slice files to keep from a list of input files.
 
-    ``mode`` accepts:
-      * ``"all"`` (default) — return ``input_files`` unchanged.
-      * ``"latest"`` — keep only the file whose K equals N (the newest
-        slice). Files without a slice suffix pass through unchanged.
-      * positive int K — keep only files whose slice index equals K. Raises
-        ``ValueError`` if a file's family has fewer than K slices.
+    Files that don't have a slice marker in their display name always pass
+    through unchanged, so unrelated inputs in a mixed pipeline are never
+    dropped.
 
-    Files without a ``slice-K-of-N`` suffix always pass through, so mixed
-    pipelines don't silently drop unrelated inputs.
+    Args:
+        input_files: A list of OutputFile-style dicts, each with a
+            "display_name" key.
+        mode: Which slices to keep:
+            "all" (default) keeps every file;
+            "latest" keeps only the last slice of each file (the most
+            recent time window);
+            a positive integer keeps only that slice number.
+
+    Returns:
+        The filtered list of input files.
+
+    Raises:
+        ValueError: If mode is invalid (see _normalize_mode), or if mode is
+            a slice number higher than a file's total number of slices.
     """
     normalized = _normalize_mode(mode)
     if normalized == "all":
@@ -85,16 +115,16 @@ def select_slice(
         if parsed is None:
             selected.append(f)
             continue
-        k, n = parsed
+        slice_number, total_slices = parsed
         if normalized == "latest":
-            if k == n:
+            if slice_number == total_slices:
                 selected.append(f)
-        else:  # positive int
-            if normalized > n:
+        else:  # specific slice number
+            if normalized > total_slices:
                 raise ValueError(
                     f"slice_select={normalized} is out of range for "
-                    f"{f.get('display_name')!r} (only {n} slices available)"
+                    f"{f.get('display_name')!r} (only {total_slices} slices available)"
                 )
-            if k == normalized:
+            if slice_number == normalized:
                 selected.append(f)
     return selected
